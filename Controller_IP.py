@@ -137,7 +137,7 @@ class ProjectController(app_manager.RyuApp):
         self.qos_flows_cookie = defaultdict(int) # {switch_id:cookie}
         self.meter_bands = defaultdict(defaultdict(int)) #{switch_id:{(tos,in_port,out_port):rate}}
         
-        self.init_bw_max = defaultdict(defaultdict(int)) #{switch_id:{meter_id:init_bw_max}}
+        self.init_bw_max = defaultdict(defaultdict(int)) #{switch_id:{meter_id:[init_bw_max,in_port,out_port}}
         self.cr_bw_max = defaultdict(defaultdict(int)) #{switch_id:{meter_id:cr_bw_max}}
         self.cr_bw_usage = defaultdict(defaultdict(int)) #{switch_id:{meter_id:cur_bw_usage}}
 
@@ -943,7 +943,8 @@ class ProjectController(app_manager.RyuApp):
                     self._request_meter_stats(dp)
             hub.sleep(self.sleep)
 
-    def handle_
+    def handle_meter_band(self):
+
     def _request_port_stats(self, datapath, port=None):
         self.logger.debug('send port stats request: %016x', datapath.id)
         ofproto = datapath.ofproto
@@ -1812,21 +1813,6 @@ class ProjectController(app_manager.RyuApp):
         self.logger.info('OFPPortStatus received: reason=%s desc=%s' ,
                           reason, msg.desc)
         
-        
-        
-    # Port information:
-        # self.logger.info("\t ***switch dpid=%s"
-        #                  "\n \t port_no=%d hw_addr=%s name=%s config=0x%08x "
-        #                  "\n \t state=0x%08x curr=0x%08x advertised=0x%08x "
-        #                  "\n \t supported=0x%08x peer=0x%08x curr_speed=%d max_speed=%d" %
-        #                  (dp.id, port_attr.port_no, port_attr.hw_addr,
-        #                   port_attr.name, port_attr.config,
-        #                   port_attr.state, port_attr.curr, port_attr.advertised,
-        #                   port_attr.supported, port_attr.peer, port_attr.curr_speed,
-        #                   port_attr.max_speed))
-        
-        
-        
         out_port = port_attr.port_no
         host_dist = False
         remove_host = []
@@ -1875,20 +1861,7 @@ class ProjectController(app_manager.RyuApp):
            
         elif port_attr.state == 0:
             pass  
-        
-        
-    #   #EventOFPPortStatsReply  
-    # @set_ev_cls(ofp_event.EventOFPPortStateChange, MAIN_DISPATCHER)
-    # def port_modify_handler(self, ev):
-    #     # dp = ev.dp
-    #     # port_attr = ev.port
-    #     dp = ev.datapath
-        
-
-    #     body = ev.reason
-    #     port = ev.port_no
-        
-    #     self.logger.info("dpid: %d reason: %s port: %d"%(dp.id,body,port))      
+         
             
         
     #get ip from arp table with host
@@ -1896,7 +1869,25 @@ class ProjectController(app_manager.RyuApp):
         for ip in self.arp_table:
             if self.arp_table[ip] == host:
                 return ip
-                
+ 
+    @set_ev_cls(ofp_event.EventOFPMeterStatsReply, MAIN_DISPATCHER)
+    def meter_stats_reply_handler(self, ev):
+        meters = []
+        msg = ev.msg
+        dp = msg.datapath
+        ofp = dp.ofproto
+
+        if self.meter_bands[dp.id]:
+        for stat in msg.body:
+            meters.append('meter_id=0x%08x len=%d flow_count=%d '
+                        'packet_in_count=%d byte_in_count=%d '
+                        'duration_sec=%d duration_nsec=%d '
+                        'band_stats=%s' %
+                        (stat.meter_id, stat.len, stat.flow_count,
+                        stat.packet_in_count, stat.byte_in_count,
+                        stat.duration_sec, stat.duration_nsec,
+                        stat.band_stats))
+        self.logger.debug('MeterStats: %s', meters)               
         
     
     # Active only when LLDP packet received
