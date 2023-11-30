@@ -135,9 +135,9 @@ class ProjectController(app_manager.RyuApp):
         self.change = False
 
         self.qos_flows_cookie = defaultdict(int) # {switch_id:cookie}
-        self.meter_bands = defaultdict(defaultdict(int)) #{switch_id:{(tos,in_port,out_port):rate}}
+        self.meter_bands = defaultdict(defaultdict(int)) #{switch_id:{meter_id:(max_rate,in_port,out_port)}}
         
-        self.init_bw_max = defaultdict(defaultdict(int)) #{switch_id:{meter_id:[init_bw_max,in_port,out_port}}
+        self.init_bw_max = defaultdict(defaultdict(int)) #{switch_id:{meter_id:init_bw_max}
         self.cr_bw_max = defaultdict(defaultdict(int)) #{switch_id:{meter_id:cr_bw_max}}
         self.cr_bw_usage = defaultdict(defaultdict(int)) #{switch_id:{meter_id:cur_bw_usage}}
 
@@ -165,7 +165,7 @@ class ProjectController(app_manager.RyuApp):
     
     def configure_meter_band(self, switch ,rate, burst=0.1, meter_id=BE_METER_ID, command=ofproto_v1_3.OFPMC_ADD):
         bands = []
-        burst_Size = rate * burst # Default burst size = 1/10 rate limit
+        burst_Size = rate * burst # Default burst size = 10% of rate limit
         dropband = ofproto_parser.OFPMeterBandDrop(rate=rate, burst_size=burst_Size) # Only use drop band
         bands.append(dropband)
         request = ofproto_parser.OFPMeterMod(datapath=switch, 
@@ -944,7 +944,8 @@ class ProjectController(app_manager.RyuApp):
             hub.sleep(self.sleep)
 
     def handle_meter_band(self):
-
+        # TODO algorithm
+        pass
     def _request_port_stats(self, datapath, port=None):
         self.logger.debug('send port stats request: %016x', datapath.id)
         ofproto = datapath.ofproto
