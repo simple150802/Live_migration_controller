@@ -1418,7 +1418,6 @@ class ProjectController(app_manager.RyuApp):
         
         
         if request.get('max-rate'):
-            
             if int(request.get('max-rate')) > DEFAULT_BW:
                 resp = "max-rate exceeds link bandwidth: \nThere are %d traffics bind to this demand" % req_num
                 self.logger.info(resp)
