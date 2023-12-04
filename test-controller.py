@@ -152,17 +152,19 @@ class ProjectController(app_manager.RyuApp):
     
 
     def have_qos_overload_meter(self, port_meters):  
-        ret = []
+        qos_overload = []
+        qos_no_overload = []
         normalize = 0
         qos_excess_bw = 0
         for meter in port_meters:
             if meter.meter_id < BE_METER_ID:
                 if meter.cr_bw_need > meter.cr_bw_max:
-                    ret.append(meter)
+                    qos_overload.append(meter)
                     normalize += meter.guaranteed_bw
                 else:
+                    qos_no_overload.append(meter)
                     qos_excess_bw += (meter.cr_bw_max - meter.cr_bw_need)
-        return ret, normalize, qos_excess_bw
+        return qos_overload, normalize, qos_excess_bw, qos_no_overload
     
     def be_meter_excess_bw(self, port_meters):
         be_meter = None
@@ -172,8 +174,17 @@ class ProjectController(app_manager.RyuApp):
                 be_meter = meter
                 if meter.cr_bw_need < meter.cr_bw_max:
                     excess_bw = NUM_RANDOM*(meter.cr_bw_max - meter.cr_bw_need)
-                break
+                    break
+
         return be_meter, excess_bw
+
+    def remain_be_bw(self, be_meter, port_meters):
+        for meter in port_meters:
+            if meter != be_meter:
+                borrowed_bw = meter.cr_bw_max - meter.guaranteed_bw
+                if meter.cr_bw_need <= meter.guaranteed_bw and borrowed_bw >= 0:
+                    be_meter.cr_bw_max += borrowed_bw
+                    meter.cr_bw_max -= borrowed_bw
 
     def reset_meter(self, meter, reset_max_limit=False):
         meter.cr_bw_need = 0
@@ -183,7 +194,7 @@ class ProjectController(app_manager.RyuApp):
         meter.last_nsec  = 0
         
         meter.cr_bw_max = meter.guaranteed_bw if reset_max_limit else meter.cr_bw_max
-    
+
     def min_bw_algorithm(self):
         for sw_id in self.datapath_list.keys():
             # meters = self.meter_bands[sw_id]
@@ -200,8 +211,11 @@ class ProjectController(app_manager.RyuApp):
                                                   meter_id=meter.meter_id, command=ofproto.OFPMC_MODIFY)
                 else:
                     be_meter, be_excess_bw  = self.be_meter_excess_bw(port_meters)
-                    qos_overload,sum_normalize_qos, qos_excess_bw = self.have_qos_overload_meter(port_meters)
-                    if be_excess_bw:
+                    # Nhung luong QoS khong dung het bw phai tra lai cho BE phan da muon
+                    self.remain_be_bw(be_meter, port_meters)
+                    qos_overload,sum_normalize_qos, qos_excess_bw, qos_no_overload = self.have_qos_overload_meter(port_meters)
+
+                    if be_excess_bw > 0:
                         if qos_overload:
                             # lay bang thong cua BE meter chia cho overloaded QOS meters
                             be_meter.cr_bw_max -= be_excess_bw
@@ -211,7 +225,7 @@ class ProjectController(app_manager.RyuApp):
                             self.reset_meter(be_meter,False)
 
                             for meter in qos_overload:
-                                meter.cr_bw_max += be_excess_bw*(meter.cr_bw_max)/sum_normalize_qos
+                                meter.cr_bw_max += be_excess_bw*(meter.guaranteed_bw)/sum_normalize_qos
                                 self.logger.info("jump into 3")
                                 self.configure_meter_band(switch=self.datapath_list[sw_id],rate=int(meter.cr_bw_max),
                                                         meter_id=meter.meter_id, command=ofproto.OFPMC_MODIFY)
@@ -242,58 +256,58 @@ class ProjectController(app_manager.RyuApp):
                     qos_excess_bw += (meter.guaranteed_bw - meter.cr_bw_need)
         return ret, normalize, qos_excess_bw, be_meter
     
-    def min_bw_algorithm_2(self):
-        for sw_id in self.datapath_list.keys():
-            # meters = self.meter_bands[sw_id]
-            for port_no in self.sw_port[sw_id].keys():
-                port_bw_usaged, port_meters = self.get_meters(sw_id,port_no)
-                self.logger.info('port_bw_usaged %s',port_bw_usaged)
-                # self.logger.info('port_meters %s', port_meters)
-                meters_overload,sum_normalize_qos, qos_excess_bw, be_meter = self.have_overload_meter(port_meters)
+    # def min_bw_algorithm_2(self):
+    #     for sw_id in self.datapath_list.keys():
+    #         # meters = self.meter_bands[sw_id]
+    #         for port_no in self.sw_port[sw_id].keys():
+    #             port_bw_usaged, port_meters = self.get_meters(sw_id,port_no)
+    #             self.logger.info('port_bw_usaged %s',port_bw_usaged)
+    #             # self.logger.info('port_meters %s', port_meters)
+    #             meters_overload,sum_normalize_qos, qos_excess_bw, be_meter = self.have_overload_meter(port_meters)
 
-                # Neu khong co hoac tat ca meter deu can bang thong thi reset ve trang thai ban dau
-                if not meters_overload or meters_overload == port_meters:
-                    for meter in port_meters:
-                        self.configure_meter_band(switch=self.datapath_list[sw_id],rate=int(meter.guaranteed_bw),
-                                                meter_id=meter.meter_id, command=ofproto.OFPMC_MODIFY)
-                        self.reset_meter(meter,True)
-                else:
-                    for meter in meters_overload:
-                        need_borrow = meter.cr_bw_need - meter.guaranteed_bw
-                        can_borrow_from_be = be_meter.guaranteed_bw*(meter.guaranteed_bw/sum_normalize_qos)
-                        # QoS meter can them bang thong
-                        if meter.meter_id != BE_METER_ID:
-                            # Muon bang thong cua BE truoc
-                            if need_borrow < can_borrow_from_be:
-                                be_meter = 
-                                self.configure_meter_band(switch=self.datapath_list[sw_id],rate=int(be_meter.guaranteed_bw),
-                                                        meter_id=meter.meter_id, command=ofproto.OFPMC_MODIFY)
-                                self.reset_meter(meter,True)
+    #             # Neu khong co hoac tat ca meter deu can bang thong thi reset ve trang thai ban dau
+    #             if not meters_overload or meters_overload == port_meters:
+    #                 for meter in port_meters:
+    #                     self.configure_meter_band(switch=self.datapath_list[sw_id],rate=int(meter.guaranteed_bw),
+    #                                             meter_id=meter.meter_id, command=ofproto.OFPMC_MODIFY)
+    #                     self.reset_meter(meter,True)
+    #             else:
+    #                 for meter in meters_overload:
+    #                     need_borrow = meter.cr_bw_need - meter.guaranteed_bw
+    #                     can_borrow_from_be = be_meter.guaranteed_bw*(meter.guaranteed_bw/sum_normalize_qos)
+    #                     # QoS meter can them bang thong
+    #                     if meter.meter_id != BE_METER_ID:
+    #                         # Muon bang thong cua BE truoc
+    #                         if need_borrow < can_borrow_from_be:
+    #                             be_meter = 
+    #                             self.configure_meter_band(switch=self.datapath_list[sw_id],rate=int(be_meter.guaranteed_bw),
+    #                                                     meter_id=meter.meter_id, command=ofproto.OFPMC_MODIFY)
+    #                             self.reset_meter(meter,True)
                 
-                if be_excess_bw:
-                    if qos_overload:
-                        # lay bang thong cua BE meter chia cho overloaded QOS meters
-                        be_meter.cr_bw_max -= be_excess_bw
-                        self.logger.info("jump into 2")
-                        self.configure_meter_band(switch=self.datapath_list[sw_id],rate=int(be_meter.cr_bw_max),
-                                                meter_id=be_meter.meter_id, command=ofproto.OFPMC_MODIFY)
-                        self.reset_meter(be_meter,False)
+    #             if be_excess_bw:
+    #                 if qos_overload:
+    #                     # lay bang thong cua BE meter chia cho overloaded QOS meters
+    #                     be_meter.cr_bw_max -= be_excess_bw
+    #                     self.logger.info("jump into 2")
+    #                     self.configure_meter_band(switch=self.datapath_list[sw_id],rate=int(be_meter.cr_bw_max),
+    #                                             meter_id=be_meter.meter_id, command=ofproto.OFPMC_MODIFY)
+    #                     self.reset_meter(be_meter,False)
 
-                        for meter in qos_overload:
-                            meter.cr_bw_max += be_excess_bw*(meter.cr_bw_max)/sum_normalize_qos
-                            self.logger.info("jump into 3")
-                            self.configure_meter_band(switch=self.datapath_list[sw_id],rate=int(meter.cr_bw_max),
-                                                    meter_id=meter.meter_id, command=ofproto.OFPMC_MODIFY)
+    #                     for meter in qos_overload:
+    #                         meter.cr_bw_max += be_excess_bw*(meter.cr_bw_max)/sum_normalize_qos
+    #                         self.logger.info("jump into 3")
+    #                         self.configure_meter_band(switch=self.datapath_list[sw_id],rate=int(meter.cr_bw_max),
+    #                                                 meter_id=meter.meter_id, command=ofproto.OFPMC_MODIFY)
                             
-                            self.reset_meter(meter,False)
-                else:
-                    if not qos_overload:
-                        # chia phan bang thong du thua cho BE meter
-                        be_meter.cr_bw_max += NUM_RANDOM*qos_excess_bw
-                        self.logger.info("jump into 4")
-                        self.configure_meter_band(switch=self.datapath_list[sw_id],rate=int(be_meter.cr_bw_max),
-                                                meter_id=be_meter.meter_id, command=ofproto.OFPMC_MODIFY)
-                        self.reset_meter(be_meter,False)
+    #                         self.reset_meter(meter,False)
+    #             else:
+    #                 if not qos_overload:
+    #                     # chia phan bang thong du thua cho BE meter
+    #                     be_meter.cr_bw_max += NUM_RANDOM*qos_excess_bw
+    #                     self.logger.info("jump into 4")
+    #                     self.configure_meter_band(switch=self.datapath_list[sw_id],rate=int(be_meter.cr_bw_max),
+    #                                             meter_id=be_meter.meter_id, command=ofproto.OFPMC_MODIFY)
+    #                     self.reset_meter(be_meter,False)
 
 
     def _request_meter_stats(self, datapath, meter_id=ofproto.OFPM_ALL):
