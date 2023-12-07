@@ -51,6 +51,12 @@ COOKIE_MASK = 1 >> 8
 # Best-effort meter id
 BE_METER_ID = 1000
 
+# Request types
+REQUEST_CREATE = 0
+REQUEST_MODIFY = 1
+REQUEST_DELETE = 2
+
+
 # HFSC take almost 0.95 of link BW
 # DEFAULT_BW = int(1000000000/0.94)
 # DEFAULT_BW = 100000000
@@ -108,10 +114,13 @@ class ProjectController(app_manager.RyuApp):
 
         self.qos_flows_cookie = defaultdict(int) # {switch_id:cookie}
         self.meter_bands = defaultdict(defaultdict(list)) #{switch_id:{meter_id:[rate,in_port,out_port]}}
+        self.request_table = defaultdict(list) #{meter_id:[path,bw]}
         
         self.init_bw_max = defaultdict(defaultdict(int)) #{switch_id:{meter_id:[init_bw_max,in_port,out_port}}
         self.cr_bw_max = defaultdict(defaultdict(int)) #{switch_id:{meter_id:cr_bw_max}}
         self.cr_bw_usage = defaultdict(defaultdict(int)) #{switch_id:{meter_id:cur_bw_usage}}
+
+
 
         
         if DEBUGING == 1:
@@ -211,7 +220,7 @@ class ProjectController(app_manager.RyuApp):
         paths = self.get_paths(host1[0], host2[0])
         paths_count = len(paths) if len(paths) < MAX_PATHS else MAX_PATHS
 
-        path_bw = []
+        path_bw = [0]
         i = 0
         for path in paths:  
             path_bw = self.get_path_available_bw(path,host1[1],host1[2])
@@ -223,19 +232,35 @@ class ProjectController(app_manager.RyuApp):
             i = i + 1
         return self.sorted_path(paths,path_bw)[0],sorted(path_bw[0])
 
-    def handle_reserve_bw_request(self, src_ip , dst_ip, guaranted_bw):
+    def handle_new_reserve_bw_request(self, src_ip , dst_ip, guaranted_bw, request_id):
+        pass
+    def handle_modify_reserve_bw_request(self, src_ip , dst_ip, guaranted_bw, request_id):
+        pass
+    def handle_delete_reserve_bw_request(self, src_ip , dst_ip, guaranted_bw, request_id):
+        pass
+
+    def handle_reserve_bw_request(self, src_ip , dst_ip, guaranted_bw, request_id, request_type):
         '''
-        - Handle a create new  request
+        - Handle a reserve bw request
         - A request will have: 
             - IP address's src and dst host which VMs belong
             - guaranted_bw: Virtual link's guaranted BW
+            - Request_id: TOS bits of virtual link
+            - Request type: 
         Return:
+           - Fail: -1
+           - Succeed: positive number
            - If mapping successed: A positive number which will be TOS bits of Virtual link's traffic
            - If mapping fail: -1  
         '''
-
         ret = -1
-
+        if request_type == REQUEST_CREATE:
+                ret = self.handle_new_reserve_bw_request(self, src_ip , dst_ip, guaranted_bw, request_id)
+        elif request_type == REQUEST_MODIFY:
+            if self.request_table[request_id]:
+                ret = self.handle_modify_reserve_bw_request(self, src_ip , dst_ip, guaranted_bw, request_id)
+        elif request_type == REQUEST_DELETE:
+            ret = self.handle_delete_reserve_bw_request(self, src_ip , dst_ip, guaranted_bw, request_id)
         src_mac = self.arp_table[src_ip]
         dst_mac = self.arp_table[dst_ip]
 
@@ -243,8 +268,10 @@ class ProjectController(app_manager.RyuApp):
         host2 = self.hosts[dst_mac]
 
         path,paths_bw = self.find_available_paths(host1,host2,guaranted_bw); 
-        if not path:
-            return ret;
+        if not path or not paths_bw:
+            return ret
+        
+        
         return ret
 
     def configure_meter_band(self, switch ,rate, burst=0.1, meter_id=BE_METER_ID, command=ofproto.OFPMC_ADD):

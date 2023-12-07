@@ -264,27 +264,19 @@ class ProjectController(app_manager.RyuApp):
                     new_bw_max = 0
                     if excess_bw >= 0:
                         if meter in ovl_meters:
-                            self.logger.info("Jump into 1")
                             new_bw_max = meter.guaranteed_bw*(1 + excess_bw/norm)   
                         
                         else:  
                             if meter.cr_bw_need:
-                                self.logger.info("Jump into 2")
                                 new_bw_max = meter.cr_bw_need
                             else:
-                                self.logger.info("Jump into 3")
                                 new_bw_max = TEST_BE
 
-                        if new_bw_max != meter.cr_bw_max:
-                            self.logger.info("Jump into 4")
+                        if not (0.95*meter.cr_bw_max <= new_bw_max <= 1.05*meter.cr_bw_max):
                             meter.cr_bw_max = new_bw_max
                             self.configure_meter_band(switch=self.datapath_list[sw_id],rate=int(meter.cr_bw_max),
                                                     burst=int(meter.guaranteed_bw),meter_id=meter.meter_id, 
                                                     command=ofproto.OFPMC_MODIFY)
-                            
-                            
-
-                        
                             
 
     def _request_meter_stats(self, datapath, meter_id=ofproto.OFPM_ALL):
