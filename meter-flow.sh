@@ -31,6 +31,6 @@ sudo ovs-ofctl add-flow s1 -O OpenFlow13 cookie=0x02,priority=200,table=1,in_por
 
 # Flow for BE traffic
 sudo ovs-ofctl add-flow s1 -O OpenFlow13 cookie=1000,priority=100,table=1,in_port=1,actions=meter:1000,output:2
-sudo ovs-ofctl add-flow s1 -O OpenFlow13 cookie=1000,priority=100,table=1,in_port=2,actions=output:1
+sudo ovs-ofctl add-flow s1 -O OpenFlow13 priority=100,table=1,in_port=2,actions=output:1
 
 sudo ovs-ofctl dump-flows s1 -O OpenFlow13

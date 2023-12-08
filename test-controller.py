@@ -60,7 +60,7 @@ BE_METER_ID = 1000
 NONE_QOS = 0 
 HAVE_QOS = 1
 
-NUM_RANDOM = 0.95
+NUM_RANDOM = 0.97
 
 @dataclass
 class PortAttr:
