@@ -42,25 +42,36 @@ import numpy as np
 from dataclasses import dataclass
 
 # Mark port has QoS meter
-NONE_QOS = 0 
-HAVE_QOS = 1
+PORT_NONE_QOS = 0 
+PORT_HAVE_QOS = 1
 
-# Cookie mask
-COOKIE_MASK = 1 >> 8
+# Cookie masks
+TOS_MASK = 0x00ff
+PORT_NO_MASK = 0xff00
 
 # Best-effort meter id
 BE_METER_ID = 1000
+BE_RATE = 0.01
 
 # Request types
-REQUEST_CREATE = 0
-REQUEST_MODIFY = 1
-REQUEST_DELETE = 2
+REQUEST_NEW    = 1
+REQUEST_MODIFY = 2
+REQUEST_DELETE = 3
+REQUEST_MAPPING_SUCCESS = 4
+REQUEST_MAPPING_FAIL = -1
 
+# Sync result
+SYNC_NONE_CHANGE = 0
+SYNC_HAVE_CHANGE = 1
 
-# HFSC take almost 0.95 of link BW
-# DEFAULT_BW = int(1000000000/0.94)
-# DEFAULT_BW = 100000000
-DEFAULT_BW = 1000000000
+# Request modify types
+CHANGE_MIN_BW = 1
+CHANGE_HOST = 2
+
+NUM_RANDOM = 0.97
+
+DEFAULT_BW = int(10000000/1000) # 100 Mbps => kbps
+NSEC         = 1000000000
 
 DEFAULT_TABLE = 100
 
@@ -75,9 +86,30 @@ DEFAULT_FLOW_PRIORITY = 0
 IDLE_TIMEOUT = 150
 
 @dataclass
+class RequestAttr:
+    outter_src_ip: int
+    outter_dst_ip: int
+    min_bw: int 
+    status: int = REQUEST_NEW
+    change_status: int = 0
+
+@dataclass
 class PortAttr:
-    have_qos: bool = NONE_QOS 
+    name: str
+    have_qos: bool = PORT_NONE_QOS 
     available_bw: int = DEFAULT_BW
+    physical_bw: int = DEFAULT_BW
+
+@dataclass
+class MeterAttr:
+    meter_id: int = 0
+    out_port: int = 0
+    guaranteed_bw: int =0
+    cr_bw_max: int =0
+    cr_bw_need: int =0
+    last_byte_in: int =0
+    last_sec: int =0
+    last_nsec: int =0
 
 class ProjectController(app_manager.RyuApp):
     OFP_VERSIONS = [ofproto.OFP_VERSION]
@@ -88,24 +120,21 @@ class ProjectController(app_manager.RyuApp):
         self.mac_to_port = {}
         self.LEARNING = 1
         self.FLAG = 0
-        self.request_id = 1
-        self.new_request = False
         
         self.topology_api_app = self
-        self.datapath_list = {} #{switch_id:datapath}
         self.arp_table = {} #{IP:MAC}
-        self.switches = [] #[switch_id]
         self.hosts = {} #{MAC:(switch_id, in_port)}
         self.multipath_group_ids = {}
         self.all_group_id = {}
         self.group_id_count =0
         self.group_ids = []
-        self.adjacency = defaultdict(defaultdict(list)) #{src_sw_id:{dst_sw_id:[port_no, PortAttr(have_qos, available_bw)]}}
-        self.bandwidths = defaultdict(lambda: defaultdict(lambda: DEFAULT_BW))
-        self.sw_port = defaultdict(defaultdict(list)) # {switch_id:{port_no:[port_name,PortAttr(have_qos,available_bw)]}}
+        self.adjacency = defaultdict(defaultdict(list)) #{src_sw_id:{dst_sw_id:[port_no, PortAttr()]}}
         self.count = 0
         self.path_install_cnt =0
-        
+
+        self.datapath_list = {} #{switch_id:datapath}
+        self.sw_port = defaultdict(dict) # {switch_id:{port_no:PortAttr()}}
+        self.switches = [] #[switch_id]
         self.max_bw = {}
         self.curr_max_bw = {}
         self.sw_reserve_bw = defaultdict(dict)
@@ -113,14 +142,9 @@ class ProjectController(app_manager.RyuApp):
         
 
         self.qos_flows_cookie = defaultdict(int) # {switch_id:cookie}
-        self.meter_bands = defaultdict(defaultdict(list)) #{switch_id:{meter_id:[rate,in_port,out_port]}}
-        self.request_table = defaultdict(list) #{meter_id:[path,bw]}
-        
-        self.init_bw_max = defaultdict(defaultdict(int)) #{switch_id:{meter_id:[init_bw_max,in_port,out_port}}
-        self.cr_bw_max = defaultdict(defaultdict(int)) #{switch_id:{meter_id:cr_bw_max}}
-        self.cr_bw_usage = defaultdict(defaultdict(int)) #{switch_id:{meter_id:cur_bw_usage}}
-
-
+        self.meter_bands = defaultdict(list) #{switch_id:[MeterAttr(),..]}
+        self.request_table = {} #{tos:RequestAttr}
+        self.qos_paths = {} #{tos:path}
 
         
         if DEBUGING == 1:
@@ -134,7 +158,219 @@ class ProjectController(app_manager.RyuApp):
         # self.datapaths = {}
         self.monitor_thread = hub.spawn(self._monitor)
 
-    def get_paths(self, src_node, dst_node):
+    def _connect_to_vim(self):
+        '''
+        Connect to Openstack
+        '''
+        pass    
+
+    def _get_qos_table(self):
+        '''
+        Call Neutron APi to get qos information form Openstack
+        '''
+        _conn = self._connect_to_vim
+        pass
+
+    def _handle_qos_request(self,api_result):
+        '''
+        Handle API result from OpenStack
+        '''
+        ret = {} # {tos:RequestAttr()}
+        pass
+        return ret
+
+    def _compare_request(self,old_request,new_request):
+        ret = SYNC_NONE_CHANGE
+        if old_request.min_bw != new_request.min_bw:
+            new_request.status = REQUEST_MODIFY
+            new_request.change_status = CHANGE_MIN_BW
+            ret = SYNC_HAVE_CHANGE
+            return new_request, ret
+        if old_request.outter_src_ip != new_request.outter_src_ip or old_request.outter_dst_ip != new_request.outter_dst_ip:
+            new_request.status = REQUEST_MODIFY
+            new_request.change_status = CHANGE_HOST
+            ret = SYNC_HAVE_CHANGE
+            return new_request, ret
+        return ret
+    
+    def _sync_qos(self):
+        '''
+        Sync qos of virtual network topology from VIMs with request_table
+        '''
+        result = self._get_qos_table
+        qos_table = self._handle_qos_request(result)
+        new_request_table = {}
+        ret = SYNC_NONE_CHANGE
+
+        for old_tos in self.request_table.items():
+            old_request = self.request_table[old_tos]
+            if old_tos in qos_table:
+                new_request = qos_table[old_tos]
+                new_request.status = REQUEST_MAPPING_SUCCESS
+                new_request,ret1 = self._compare_request(old_request,new_request)
+                if ret1 == SYNC_HAVE_CHANGE:
+                    new_request_table[old_tos] = new_request
+                else:
+                    new_request_table[old_tos] = old_request
+                del qos_table[old_tos]
+            else:
+                old_request.status = REQUEST_DELETE
+                new_request_table[old_tos] = old_request
+                ret = SYNC_HAVE_CHANGE
+
+        new_request_table = new_request_table | qos_table
+        return new_request_table, ret
+    
+    def sync_qos(self):
+        new_request_table, ret = self._sync_qos()
+        if ret == SYNC_HAVE_CHANGE:
+            self.handle_request_table(new_request_table)
+    
+    def handle_request_table(self,request_table):
+        for tos, request in request_table.items():
+            # Giai phong bandwidth cua QoS bi xoa truoc, viec nay luon thanh cong
+            if request.status == REQUEST_DELETE:
+                self._handle_request(tos, request)
+                del request_table[tos]
+
+        for tos, request in request_table.items():
+            ret = self._handle_request(tos, request)
+            if ret == REQUEST_MAPPING_FAIL:
+                del request_table[tos]
+            else:
+                request.status = REQUEST_MAPPING_SUCCESS
+                request.change_status = 0
+
+        self.request_table = request_table
+        
+    def _handle_request(self, tos, request):
+        '''
+        Handle a reserve bw request
+        '''
+        ret = -1
+        if request.status == REQUEST_NEW:
+            ret = self._handle_new_request(tos, request)
+        elif request.status == REQUEST_MODIFY:
+            ret = self._handle_modify_request(tos, request)
+        elif request.status == REQUEST_DELETE:
+            ret = self._handle_delete_request(tos,request)
+        return ret
+    
+    def _handle_new_request(self, tos, request):
+        src_mac = self.arp_table[request.outter_src_ip]
+        dst_mac = self.arp_table[request.outter_dst_ip]
+
+        src_host = self.hosts[src_mac]
+        dst_host = self.hosts[dst_mac]
+
+        path,path_bw = self.find_available_path(src_host,dst_host,request.min_bw); 
+        
+        if not path or not path_bw:
+            return REQUEST_MAPPING_FAIL
+        
+        self.qos_paths[tos] = path
+        self._install_meters_in_path(tos,request,path,dst_host)
+        return REQUEST_MAPPING_SUCCESS
+    
+    def _handle_modify_request(self, tos, request):
+        ret = REQUEST_MAPPING_FAIL
+        old_path = self.qos_paths[tos]
+        dst_mac = self.arp_table[request.outter_dst_ip]
+        dst_host = self.hosts[dst_mac]
+
+        if request.change_status == CHANGE_HOST:
+            # Thu mapping request vao mot path khac
+            self._handle_delete_request(self, tos, request)
+            ret = self._handle_new_request(self, tos, request)
+
+        if request.change_status == CHANGE_MIN_BW:
+            path_bw = self._get_path_available_bw(old_path,dst_host[1])
+            if path_bw >= request.min_bw:
+                self._change_min_tos_bw_in_path(tos,request,old_path,dst_host)
+            else:
+                # Thu mapping request vao mot path khac
+                self._handle_delete_request(self, tos, request)
+                ret = self._handle_new_request(self, tos, request)    
+        return ret
+    
+    def _handle_delete_request(self, tos, request):
+        old_path = self.qos_paths.pop(tos)
+        self._delete_meters_in_path(tos, old_path, request)
+        return REQUEST_MAPPING_SUCCESS
+        
+    def _change_min_tos_bw_in_path(self, tos, request, path, dst_host):
+        new_min_bw = request.min_bw
+        old_min_bw = self.request_table[tos].min_bw
+        for i in range(len(path)-1):
+            src_sw = path[i]
+            dst_sw = path[i+1]
+            port_no = self.adjacency[src_sw][dst_sw]
+            meter_id = ((port_no << 8) & PORT_NO_MASK) | (tos & TOS_MASK)
+
+            self.sw_port[src_sw][port_no].have_qos = PORT_HAVE_QOS
+            self.sw_port[src_sw][port_no].available_bw += old_min_bw - new_min_bw
+            self.meter_bands[src_sw].guaranteed_bw = request.min_bw
+
+            self.configure_meter_band(switch=self.datapath_list[src_sw],rate=request.min_bw,
+                                      meter_id=meter_id,command=ofproto.OFPMC_MODIFY)
+        # Last port connect to dst_host
+        src_sw = path[-1]
+        port_no = dst_host[1]
+        meter_id = ((port_no << 8) & PORT_NO_MASK) | (tos & TOS_MASK)
+        self.sw_port[src_sw][port_no].have_qos = PORT_HAVE_QOS
+        self.sw_port[src_sw][port_no].available_bw += old_min_bw - new_min_bw
+        self.meter_bands[src_sw].guaranteed_bw = request.min_bw
+
+        self.configure_meter_band(switch=self.datapath_list[src_sw],rate=request.min_bw,
+                                    meter_id=meter_id,command=ofproto.OFPMC_ADD)
+        
+    def _install_meters_in_path(self, tos, request, path, dst_host):
+        for i in range(len(path)-1):
+            src_sw = path[i]
+            dst_sw = path[i+1]
+            port_no = self.adjacency[src_sw][dst_sw]
+            meter_id = ((port_no << 8) & PORT_NO_MASK) | (tos & TOS_MASK)
+
+            self.sw_port[src_sw][port_no].have_qos = PORT_HAVE_QOS
+            self.sw_port[src_sw][port_no].available_bw -= request.min_bw
+            self.meter_bands[src_sw] = MeterAttr(meter_id,port_no,request.min_bw)
+
+            self.configure_meter_band(switch=self.datapath_list[src_sw],rate=request.min_bw,
+                                      meter_id=meter_id,command=ofproto.OFPMC_ADD)
+        # Last port connect to dst_host
+        src_sw = path[-1]
+        port_no = dst_host[1]
+        meter_id = ((port_no << 8) & PORT_NO_MASK) | (tos & TOS_MASK)
+        self.sw_port[src_sw][port_no].have_qos = PORT_HAVE_QOS
+        self.sw_port[src_sw][port_no].available_bw -= request.min_bw
+        self.meter_bands[src_sw] = MeterAttr(meter_id,port_no,request.min_bw)
+
+        self.configure_meter_band(switch=self.datapath_list[src_sw],rate=request.min_bw,
+                                    meter_id=meter_id,command=ofproto.OFPMC_ADD)
+
+    def _delete_meters_in_path(self, tos, path, request):
+        dst_mac = self.arp_table[request.outter_dst_ip]
+        dst_host = self.hosts[dst_mac]
+        old_min_bw = self.request_table[tos].min_bw    
+        for i in range(len(path)-1):
+            src_sw = path[i]
+            dst_sw = path[i+1]
+            port_no = self.adjacency[src_sw][dst_sw]
+            meter_id = ((port_no << 8) & PORT_NO_MASK) | (tos & TOS_MASK)
+            self.sw_port[src_sw][port_no].available_bw += old_min_bw
+            # TODO: delete flows belong meters
+            self.configure_meter_band(switch=self.datapath_list[src_sw],rate=request.min_bw,
+                                      meter_id=meter_id,command=ofproto.OFPMC_DELETE)
+        # Last port connect to dst_host
+        src_sw = path[-1]
+        port_no = dst_host[1]
+        meter_id = ((port_no << 8) & PORT_NO_MASK) | (tos & TOS_MASK)
+        self.sw_port[src_sw][port_no].available_bw += old_min_bw
+
+        self.configure_meter_band(switch=self.datapath_list[src_sw],rate=request.min_bw,
+                                    meter_id=meter_id,command=ofproto.OFPMC_DELETE)
+
+    def _get_paths(self, src_node, dst_node):
         '''
         Get all paths from src_node to dst_node using DFS algorithm    
         '''
@@ -176,7 +412,7 @@ class ProjectController(app_manager.RyuApp):
         
         return paths
 
-    def sorted_path(self,paths,path_weight):
+    def _sorted_path(self,paths,path_weight):
         '''
         Sorting paths based on path_weight
         '''
@@ -186,140 +422,118 @@ class ProjectController(app_manager.RyuApp):
        
         return sorted_list
 
-    def get_port_bw_available(self, dpid, port_no,):
+    def _get_port_bw_available(self, dpid, port_no):
         '''
         Get the bw availbe of a port
         '''
-        return self.sw_port[dpid][port_no][1].available_bw
-    
+        return self.sw_port[dpid][port_no][1].available_bw    
 
-    def get_path_available_bw(self, path,first_port,last_port):
+    def _get_path_available_bw(self, path,last_port):
         '''
         Get the available bandwidth of path
         '''
         port_bw = []
         next_port = None
 
-        port_bw.append(self.get_port_bw_available(first_port, path[0]))
         for i in range(len(path) - 1):
             next_port = self.adjacency[path[i]][path[i+1]]
-            port_bw.append(self.get_port_bw_available(next_port,path[i]))
+            port_bw.append(self._get_port_bw_available(next_port,path[i]))
             
-        port_bw.append(self.get_port_bw_available(last_port, path[-1]))
+        port_bw.append(self._get_port_bw_available(last_port, path[-1]))
         
         # Available bw of a physical path = minimum bw of physical links belong path
         return min(port_bw)
     
-    def find_available_path(self, host1, host2, demand_bw):
+    def find_available_path(self, src_host, dst_host, demand_bw):
         '''
         - Find physical path which is best to map virtual link with demand_bw
         - A best physical path has smallest bandwidth in satisfying paths.
         - Return:
             - available path and their bandwidth.
         '''
-        paths = self.get_paths(host1[0], host2[0])
-        paths_count = len(paths) if len(paths) < MAX_PATHS else MAX_PATHS
+        paths = self._get_paths(src_host[0], dst_host[0])
+        # paths_count = len(paths) if len(paths) < MAX_PATHS else MAX_PATHS
 
-        path_bw = [0]
+        path_bw = []
         i = 0
         for path in paths:  
-            path_bw = self.get_path_available_bw(path,host1[1],host1[2])
+            path_bw = self._get_path_available_bw(path,dst_host[1])
             # Satisfying paths have bandwdith >= demand_bw of virtual link
             if (path_bw >= demand_bw):
                 path_bw.append(path_bw)
             else:
                 del paths[i]
             i = i + 1
-        return self.sorted_path(paths,path_bw)[0],sorted(path_bw[0])
+        return self._sorted_path(paths,path_bw)[0],sorted(path_bw[0])
 
-    def handle_new_reserve_bw_request(self, src_ip , dst_ip, guaranted_bw, request_id):
-        pass
-    def handle_modify_reserve_bw_request(self, src_ip , dst_ip, guaranted_bw, request_id):
-        pass
-    def handle_delete_reserve_bw_request(self, src_ip , dst_ip, guaranted_bw, request_id):
-        pass
+    def get_overload_meters(self, port_meters):  
+        ovl_meters = []
+        normalize = 0
+        excess_bw = DEFAULT_BW/NUM_RANDOM
+        for meter in port_meters:
+            if meter.cr_bw_need > meter.guaranteed_bw:
+                ovl_meters.append(meter)
+                normalize += meter.guaranteed_bw
+                excess_bw -= meter.guaranteed_bw
+            else:
+                excess_bw -= meter.cr_bw_need
+        return ovl_meters, normalize, excess_bw
+    
+    def min_bw_algorithm_2(self):
+        for sw_id in self.datapath_list.keys():
+            # meters = self.meter_bands[sw_id]
+            for port_no in self.sw_port[sw_id].keys():
+                port_bw_usaged, port_meters = self.get_meters(sw_id,port_no)
+                self.logger.info('port_bw_usaged %s',port_bw_usaged)
+                
+                ovl_meters,norm,excess_bw=self.get_overload_meters(port_meters)
+                self.logger.info("excess_bw %s",excess_bw)
+                for meter in port_meters:
+                    new_bw_max = 0
+                    if excess_bw >= 0:
+                        if meter in ovl_meters:
+                            new_bw_max = meter.guaranteed_bw*(1 + excess_bw/norm)   
+                        
+                        else:  
+                            if meter.cr_bw_need:
+                                new_bw_max = meter.cr_bw_need
+                            else:
+                                new_bw_max = BE_RATE*DEFAULT_BW
 
-    def handle_reserve_bw_request(self, src_ip , dst_ip, guaranted_bw, request_id, request_type):
-        '''
-        - Handle a reserve bw request
-        - A request will have: 
-            - IP address's src and dst host which VMs belong
-            - guaranted_bw: Virtual link's guaranted BW
-            - Request_id: TOS bits of virtual link
-            - Request type: 
-        Return:
-           - Fail: -1
-           - Succeed: positive number
-           - If mapping successed: A positive number which will be TOS bits of Virtual link's traffic
-           - If mapping fail: -1  
-        '''
-        ret = -1
-        if request_type == REQUEST_CREATE:
-                ret = self.handle_new_reserve_bw_request(self, src_ip , dst_ip, guaranted_bw, request_id)
-        elif request_type == REQUEST_MODIFY:
-            if self.request_table[request_id]:
-                ret = self.handle_modify_reserve_bw_request(self, src_ip , dst_ip, guaranted_bw, request_id)
-        elif request_type == REQUEST_DELETE:
-            ret = self.handle_delete_reserve_bw_request(self, src_ip , dst_ip, guaranted_bw, request_id)
-        src_mac = self.arp_table[src_ip]
-        dst_mac = self.arp_table[dst_ip]
+                        if not (0.95*meter.cr_bw_max <= new_bw_max <= 1.05*meter.cr_bw_max):
+                            meter.cr_bw_max = new_bw_max
+                            self.configure_meter_band(switch=self.datapath_list[sw_id],rate=int(meter.cr_bw_max),
+                                                    burst=int(meter.guaranteed_bw),meter_id=meter.meter_id, 
+                                                    command=ofproto.OFPMC_MODIFY)
+                            
+    def configure_meter_band(self, switch ,rate, burst=None, meter_id=BE_METER_ID, command=ofproto.OFPMC_ADD):
 
-        host1 = self.hosts[src_mac]
-        host2 = self.hosts[dst_mac]
-
-        path,paths_bw = self.find_available_paths(host1,host2,guaranted_bw); 
-        if not path or not paths_bw:
-            return ret
-        
-        
-        return ret
-
-    def configure_meter_band(self, switch ,rate, burst=0.1, meter_id=BE_METER_ID, command=ofproto.OFPMC_ADD):
-        bands = []
-        burst_Size = rate * burst # Default burst size = 1/10 rate limit
-        dropband = of_parser.OFPMeterBandDrop(rate=rate, burst_size=burst_Size) # Only use drop band
-        bands.append(dropband)
+        burst_size = burst if burst else int(2*rate)  # Default burst size = rate limit
+        dropband = of_parser.OFPMeterBandDrop(rate=rate, burst_size=burst_size) # Only use drop band
         request = of_parser.OFPMeterMod(datapath=switch, 
                                    command=command, 
-                                   flags=ofproto.OFPMF_KBPS, 
+                                   flags=ofproto.OFPMF_KBPS|ofproto.OFPMF_BURST|ofproto.OFPMF_STATS, 
                                    meter_id=meter_id, 
-                                   bands=bands)
+                                   bands=[dropband])
         switch.send_msg(request)
 
     def _monitor(self):
         while True:
             for switch_id in self.datapath_list.keys():
                 dp = self.datapath_list[switch_id]
-                # Monitor meter in switches
-                if self.meter_bands[switch_id]:
-                    self._request_meter_stats(dp)
+                self._request_flow_stats(dp,0)
             hub.sleep(self.sleep)
 
-    def _request_meter_stats(self, datapath, meter_id=ofproto.OFPM_ALL):
-        self.logger.debug('send meter stats request: %016x', datapath.id)
+    def _request_flow_stats(self, datapath, cookie=0):
+        ofproto
 
-        #Send MeterStatsRequest
-        req = of_parser.OFPMeterStatsRequest(datapath, 0, meter_id=meter_id)
+        cookie_mask = cookie
+        match = None
+        req = of_parser.OFPFlowStatsRequest(datapath, 0, 1,
+                                            ofproto.OFPP_ANY, ofproto.OFPG_ANY,
+                                            cookie, cookie_mask,
+                                            match)
         datapath.send_msg(req)
-
-    @set_ev_cls(ofp_event.EventOFPMeterStatsReply, MAIN_DISPATCHER)
-    def meter_stats_reply_handler(self, ev):
-        meters = []
-        msg = ev.msg
-        switch = msg.datapath
-
-        meters = self.meter_bands[switch.id] # Meters in this switch
-
-        for stat in msg.body:
-            meters.append('meter_id=0x%08x len=%d flow_count=%d '
-                        'packet_in_count=%d byte_in_count=%d '
-                        'duration_sec=%d duration_nsec=%d '
-                        'band_stats=%s' %
-                        (stat.meter_id, stat.len, stat.flow_count,
-                        stat.packet_in_count, stat.byte_in_count,
-                        stat.duration_sec, stat.duration_nsec,
-                        stat.band_stats))
-        self.logger.debug('MeterStats: %s', meters) 
 
     @set_ev_cls(event.EventSwitchLeave, MAIN_DISPATCHER)
     def switch_leave_handler(self, ev):
@@ -349,11 +563,6 @@ class ProjectController(app_manager.RyuApp):
         if switch.id not in self.switches:
             self.switches.append(switch.id)
             self.datapath_list[switch.id] = switch
-            self.meter_bands[switch.id][BE_METER_ID] = (DEFAULT_BW, ofproto.OFPP_ANY, ofproto.OFPP_ANY)
-            self.init_bw_max[switch.id][BE_METER_ID] = DEFAULT_BW
-
-            # Add a default Best-effort meter-band in every new switch.
-            self.configure_meter_band(switch ,DEFAULT_BW)
 
             # Request port/link descriptions, useful for obtaining bandwidth
             req = of_parser.OFPPortDescStatsRequest(switch)
@@ -363,7 +572,11 @@ class ProjectController(app_manager.RyuApp):
                 port_name = port.name.decode('utf-8')
                 # By default, a port has bandwidth = DEFAULT_BW
                 #  and doesn't have meter-band limit
-                self.sw_port[switch.id][port.port_no] = [port_name,PortAttr(NONE_QOS,DEFAULT_BW)]
+                self.sw_port[switch.id][port.port_no] = PortAttr(port_name)
+                # ex: 0x0100 with 01 is port_no
+                port_meter_id = ((port.port_no << 8) & PORT_NO_MASK)
+                self.configure_meter_band(switch=switch,rate=DEFAULT_BW,
+                                          meter_id=port_meter_id)
         
         # self.logger.info("ALL_SW: %s",self.sw_port)
 
@@ -446,3 +659,42 @@ class ProjectController(app_manager.RyuApp):
            
         elif port_attr.state == 0:
             pass  
+
+    @set_ev_cls(ofp_event.EventOFPFlowStatsReply, MAIN_DISPATCHER)
+    def flow_stats_reply_handler(self, ev):
+        flows = []
+        msg = ev.msg
+        dp = msg.datapath
+        meters = self.meter_bands[dp.id]
+        
+        for stat in ev.msg.body:
+            flows.append('table_id=%s '
+                        'duration_sec=%d duration_nsec=%d '
+                        'priority=%d '
+                        'idle_timeout=%d hard_timeout=%d flags=0x%04x '
+                        'cookie=%d packet_count=%d byte_count=%d '
+                        'match=%s instructions=%s' %
+                        (stat.table_id,
+                        stat.duration_sec, stat.duration_nsec,
+                        stat.priority,
+                        stat.idle_timeout, stat.hard_timeout, stat.flags,
+                        stat.cookie, stat.packet_count, stat.byte_count,
+                        stat.match, stat.instructions))
+            for meter in meters:
+                if meter.meter_id == stat.cookie:
+
+
+                    arrival_sec = float((stat.duration_sec - meter.last_sec) + (stat.duration_nsec - meter.last_nsec)/NSEC)
+                    arival_byte_in = stat.byte_count - meter.last_byte_in
+
+                    meter.cr_bw_need = int(arival_byte_in / arrival_sec)
+                    meter.cr_bw_need = int((8*meter.cr_bw_need)/1000)
+
+                    meter.last_byte_in = stat.byte_count
+                    meter.last_sec = stat.duration_sec
+                    meter.last_nsec = stat.duration_nsec
+                    
+                    self.logger.info('Meter_id: %s, Meter.cr_bw_need: %s\n',
+                                      meter.meter_id, meter.cr_bw_need)
+
+        self.logger.debug('FlowStats: %s', flows)      
