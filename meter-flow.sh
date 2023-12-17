@@ -12,14 +12,14 @@ sudo ovs-ofctl add-flow s1 -O Openflow13 priority=200,table=0,in_port=2,actions=
 # FLow for meter 1
 #sudo ovs-ofctl add-flow s1 -O OpenFlow13 cookie=0x01,priority=200,table=1,in_port=1,ip,tcp,tcp_dst=1000,actions=meter:1,output:2
 #sudo ovs-ofctl add-flow s1 -O OpenFlow13 priority=200,table=1,in_port=2,ip,tcp,tcp_src=1000,actions=meter:1,output:1
-sudo ovs-ofctl add-flow s1 -O OpenFlow13 cookie=0x01,priority=200,table=1,in_port=1,ip,udp,udp_dst=1000,actions=meter:1,output:2
+#sudo ovs-ofctl add-flow s1 -O OpenFlow13 cookie=0x01,priority=200,table=1,in_port=1,ip,udp,udp_dst=1000,actions=meter:1,output:2
 #sudo ovs-ofctl add-flow s1 -O OpenFlow13 cookie=0x01,priority=200,table=2,in_port=1,ip,udp,udp_dst=1000,actions=output:2
 #sudo ovs-ofctl add-flow s1 -O OpenFlow13 priority=200,table=1,in_port=2,ip,udp,udp_src=1000,actions=meter:1,output:1
 
 # Flow for meter 2
 #sudo ovs-ofctl add-flow s1 -O OpenFlow13 cookie=0x02,priority=200,table=1,in_port=1,ip,tcp,tcp_dst=2000,actions=meter:2,output:2
 #sudo ovs-ofctl add-flow s1 -O OpenFlow13 priority=200,table=1,in_port=2,ip,tcp,tcp_src=2000,actions=meter:2,output:1
-sudo ovs-ofctl add-flow s1 -O OpenFlow13 cookie=0x02,priority=200,table=1,in_port=1,ip,udp,udp_dst=2000,actions=meter:2,output:2
+#sudo ovs-ofctl add-flow s1 -O OpenFlow13 cookie=0x02,priority=200,table=1,in_port=1,ip,udp,udp_dst=2000,actions=meter:2,output:2
 #sudo ovs-ofctl add-flow s1 -O OpenFlow13 cookie=0x02,priority=200,table=2,in_port=1,ip,udp,udp_dst=2000,actions=output:2
 #sudo ovs-ofctl add-flow s1 -O OpenFlow13 priority=200,table=1,in_port=2,ip,udp,udp_src=2000,actions=meter:2,output:1
 
@@ -30,7 +30,7 @@ sudo ovs-ofctl add-flow s1 -O OpenFlow13 cookie=0x02,priority=200,table=1,in_por
 #sudo ovs-ofctl add-flow s1 -O OpenFlow13 priority=200,table=1,in_port=1,ip,udp,udp_dst=3000,actions=meter:3,output:2
 
 # Flow for BE traffic
-sudo ovs-ofctl add-flow s1 -O OpenFlow13 cookie=1000,priority=100,table=1,in_port=1,actions=meter:1000,output:2
+sudo ovs-ofctl add-flow s1 -O OpenFlow13 priority=100,table=1,in_port=1,actions=output:2
 sudo ovs-ofctl add-flow s1 -O OpenFlow13 priority=100,table=1,in_port=2,actions=output:1
 
 sudo ovs-ofctl dump-flows s1 -O OpenFlow13
