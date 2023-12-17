@@ -34,12 +34,14 @@ import random
 import time
 import logging
 
-from libovsdb import libovsdb
 import json
 from ryu.lib.ovs import bridge
 from ryu.ofproto import nx_match
-import numpy as np
 from dataclasses import dataclass
+
+# QoS flow direction
+SAME_DIRECTION = 1
+REVERSE_DIRECTION = 2
 
 # Mark port has QoS meter
 PORT_NONE_QOS = 0 
@@ -48,9 +50,9 @@ PORT_HAVE_QOS = 1
 # Cookie masks
 TOS_MASK = 0x00ff
 PORT_NO_MASK = 0xff00
+QOS_FLOW_MASK = 0x0000ff
 
-# Best-effort meter id
-BE_METER_ID = 1000
+# Best-effort meter rate
 BE_RATE = 0.01
 
 # Request types
@@ -128,17 +130,13 @@ class ProjectController(app_manager.RyuApp):
         self.all_group_id = {}
         self.group_id_count =0
         self.group_ids = []
-        self.adjacency = defaultdict(defaultdict(list)) #{src_sw_id:{dst_sw_id:[port_no, PortAttr()]}}
+        self.adjacency = defaultdict(dict)
         self.count = 0
         self.path_install_cnt =0
 
         self.datapath_list = {} #{switch_id:datapath}
         self.sw_port = defaultdict(dict) # {switch_id:{port_no:PortAttr()}}
         self.switches = [] #[switch_id]
-        self.max_bw = {}
-        self.curr_max_bw = {}
-        self.sw_reserve_bw = defaultdict(dict)
-        self.port_reserve_bw = defaultdict(dict)
         
 
         self.qos_flows_cookie = defaultdict(int) # {switch_id:cookie}
@@ -330,11 +328,25 @@ class ProjectController(app_manager.RyuApp):
             dst_sw = path[i+1]
             port_no = self.adjacency[src_sw][dst_sw]
             meter_id = ((port_no << 8) & PORT_NO_MASK) | (tos & TOS_MASK)
+            match = of_parser.OFPMatch(
+                eth_type=0x0800,
+                ip_proto=17,
+                ipv4_src=request.outter_src_ip,
+                ipv4_dst=request.outter_dst_ip, 
+                ip_ecn=(tos >> 6) & 0xFF,
+                ip_dscp=(tos << 2) & 0xFF
+            )
+            action = of_parser.OFPActionOutput(port_no)
+            instr = [of_parser.OFPInstructionMeter(meter_id)]
+            cookie = (meter_id << 8) | (0xff)
 
             self.sw_port[src_sw][port_no].have_qos = PORT_HAVE_QOS
             self.sw_port[src_sw][port_no].available_bw -= request.min_bw
             self.meter_bands[src_sw] = MeterAttr(meter_id,port_no,request.min_bw)
-
+            
+            self.add_flow(switch=self.datapath_list[src_sw], priority=200, match=match,
+                          cookie=cookie, actions=action, idle_timeout=3600,insts=instr)
+            
             self.configure_meter_band(switch=self.datapath_list[src_sw],rate=request.min_bw,
                                       meter_id=meter_id,command=ofproto.OFPMC_ADD)
         # Last port connect to dst_host
@@ -344,7 +356,21 @@ class ProjectController(app_manager.RyuApp):
         self.sw_port[src_sw][port_no].have_qos = PORT_HAVE_QOS
         self.sw_port[src_sw][port_no].available_bw -= request.min_bw
         self.meter_bands[src_sw] = MeterAttr(meter_id,port_no,request.min_bw)
-
+        match = of_parser.OFPMatch(
+            eth_type=0x0800,
+            ip_proto=17,
+            ipv4_src=request.outter_src_ip,
+            ipv4_dst=request.outter_dst_ip, 
+            ip_ecn=(tos >> 6) & 0xFF,
+            ip_dscp=(tos << 2) & 0xFF
+        )
+        action = of_parser.OFPActionOutput(port_no)
+        instr = [of_parser.OFPInstructionMeter(meter_id)]
+        cookie = (meter_id << 8) | (0xff)
+        
+        self.add_flow(switch=self.datapath_list[src_sw], priority=200, match=match,
+                      cookie=cookie, actions=action, idle_timeout=3600,insts=instr)
+        
         self.configure_meter_band(switch=self.datapath_list[src_sw],rate=request.min_bw,
                                     meter_id=meter_id,command=ofproto.OFPMC_ADD)
 
@@ -358,7 +384,9 @@ class ProjectController(app_manager.RyuApp):
             port_no = self.adjacency[src_sw][dst_sw]
             meter_id = ((port_no << 8) & PORT_NO_MASK) | (tos & TOS_MASK)
             self.sw_port[src_sw][port_no].available_bw += old_min_bw
-            # TODO: delete flows belong meters
+            cookie = cookie = (meter_id << 8) | (0xff)
+            
+            self.del_flow(datapath=self.datapath_list[src_sw],cookie=cookie, cookie_mask=cookie)
             self.configure_meter_band(switch=self.datapath_list[src_sw],rate=request.min_bw,
                                       meter_id=meter_id,command=ofproto.OFPMC_DELETE)
         # Last port connect to dst_host
@@ -367,6 +395,7 @@ class ProjectController(app_manager.RyuApp):
         meter_id = ((port_no << 8) & PORT_NO_MASK) | (tos & TOS_MASK)
         self.sw_port[src_sw][port_no].available_bw += old_min_bw
 
+        self.del_flow(datapath=self.datapath_list[src_sw],cookie=cookie, cookie_mask=cookie)
         self.configure_meter_band(switch=self.datapath_list[src_sw],rate=request.min_bw,
                                     meter_id=meter_id,command=ofproto.OFPMC_DELETE)
 
@@ -412,6 +441,15 @@ class ProjectController(app_manager.RyuApp):
         
         return paths
 
+    def _get_shortest_paths(self, src_node, dst_node):
+        paths = self._get_paths(src_node, dst_node)
+        paths_count = len(paths) if len(
+            paths) < MAX_PATHS else MAX_PATHS
+        pw = []
+        for path in paths:
+            pw.append(len(path))
+        return self.sorted_path(paths,pw)[0:(paths_count)],sorted(pw[0:(paths_count)])        
+    
     def _sorted_path(self,paths,path_weight):
         '''
         Sorting paths based on path_weight
@@ -506,9 +544,9 @@ class ProjectController(app_manager.RyuApp):
                                                     burst=int(meter.guaranteed_bw),meter_id=meter.meter_id, 
                                                     command=ofproto.OFPMC_MODIFY)
                             
-    def configure_meter_band(self, switch ,rate, burst=None, meter_id=BE_METER_ID, command=ofproto.OFPMC_ADD):
+    def configure_meter_band(self, switch, rate, meter_id, burst=None, command=ofproto.OFPMC_ADD):
 
-        burst_size = burst if burst else int(2*rate)  # Default burst size = rate limit
+        burst_size = burst if burst else int(2*rate)  # Default burst size = 2 * rate limit
         dropband = of_parser.OFPMeterBandDrop(rate=rate, burst_size=burst_size) # Only use drop band
         request = of_parser.OFPMeterMod(datapath=switch, 
                                    command=command, 
@@ -521,19 +559,197 @@ class ProjectController(app_manager.RyuApp):
         while True:
             for switch_id in self.datapath_list.keys():
                 dp = self.datapath_list[switch_id]
-                self._request_flow_stats(dp,0)
+                # QoS flow has cookie mask 
+                self._request_flow_stats(dp,cookie=0xffffff,cookie_mask=QOS_FLOW_MASK)
             hub.sleep(self.sleep)
 
-    def _request_flow_stats(self, datapath, cookie=0):
-        ofproto
-
-        cookie_mask = cookie
+    def _request_flow_stats(self, datapath, cookie=0, cookie_mask=0):
         match = None
-        req = of_parser.OFPFlowStatsRequest(datapath, 0, 1,
-                                            ofproto.OFPP_ANY, ofproto.OFPG_ANY,
-                                            cookie, cookie_mask,
-                                            match)
+        req = of_parser.OFPFlowStatsRequest(datapath=datapath, cookie=cookie, 
+                                            cookie_mask=cookie_mask, match=match)
         datapath.send_msg(req)
+
+    def del_flow(self, datapath, cookie, cookie_mask):
+        mod = of_parser.OFPFlowMod(datapath=datapath,command=ofproto.OFPFC_DELETE,
+                                cookie=cookie,cookie_mask=cookie_mask)
+        datapath.send_msg(mod)
+
+    def add_flow(self, datapath, priority, match, actions, idle_timeout=0, 
+                buffer_id=None,insts=None,table_id=0,cookie=0,cookie_mask=0):
+        # print "Adding flow ", match, actions
+        ofproto = datapath.ofproto
+        parser = datapath.ofproto_parser
+
+        inst = [parser.OFPInstructionActions(ofproto.OFPIT_APPLY_ACTIONS,
+                                             actions)]
+        if not cookie_mask:
+            cookie_mask = cookie_mask
+        if insts:
+            inst.append(insts)
+        if buffer_id:
+            mod = parser.OFPFlowMod(datapath=datapath, buffer_id=buffer_id,idle_timeout=idle_timeout,
+                                    priority=priority, match=match,cookie=cookie,cookie_mask=cookie_mask,
+                                    instructions=inst,table_id=table_id)
+
+        else:
+            mod = parser.OFPFlowMod(datapath=datapath,idle_timeout=idle_timeout, priority=priority,
+                                    cookie=cookie,cookie_mask=cookie_mask, match=match, 
+                                    instructions=inst,table_id=table_id)
+        datapath.send_msg(mod)
+
+    def add_ports_to_paths(self, paths, first_port, last_port):
+        '''
+        Add the ports that connects the switches for all paths
+        '''
+        paths_p = []
+        for path in paths:
+            p = {}
+            in_port = first_port
+            # print("-----")
+            # print(path[:-1],"\n", path[1:])
+            for s1, s2 in zip(path[:-1], path[1:]):
+                out_port = self.adjacency[s1][s2]
+                # print('s',s1,s2,out_port)
+                p[s1] = (in_port, out_port)
+                in_port = self.adjacency[s2][s1]
+            p[path[-1]] = (in_port, last_port)
+            paths_p.append(p)
+
+        return paths_p
+
+    def install_paths_arp(self, src, first_port, dst, last_port, ip_src, ip_dst):
+        self.LEARNING = 1
+        paths,pw = self.get_optimal_paths(src, dst,first_port,last_port)
+        pw = pw[0]
+        path = paths[0]
+
+        paths_with_ports = self.add_ports_to_paths(paths, first_port, last_port)
+        paths_with_ports = paths_with_ports[0]
+
+        if VERBOSE == 1:
+            print(paths_with_ports)
+            # print(pw)
+            print("#adjacency",self.adjacency)
+
+        for node in paths[0]:
+
+            dp = self.datapath_list[node]
+            ofp_parser = dp.ofproto_parser
+
+            ports = defaultdict(list)
+            actions = []
+        
+            if node in paths_with_ports:
+                in_port = paths_with_ports[node][0]
+                out_port = paths_with_ports[node][1]
+                if (out_port, pw) not in ports[in_port]:
+                    ports[in_port].append((out_port, pw))
+        
+            if VERBOSE == 1:
+                print("-------------------------------")
+                print("\tnode {}: ports{}".format(node,ports) ) 
+
+            for in_port in ports:
+                # ARP
+                match_arp = ofp_parser.OFPMatch(
+                    eth_type=0x0806, 
+                    arp_spa=ip_src, 
+                    arp_tpa=ip_dst
+                )
+            
+                out_ports = ports[in_port]
+                be_meter_id = ((out_ports[0][0] << 8) & PORT_NO_MASK)
+                actions = [ofp_parser.OFPActionOutput(out_ports[0][0])]
+                # Goto port's BE meter
+                instr = [ofp_parser.OFPInstructionMeter(be_meter_id)]
+                self.add_flow(dp, 1, match_arp, actions,IDLE_TIMEOUT,insts=instr)
+        return paths_with_ports[src][1]
+    
+    def install_paths(self, src, first_port, dst, last_port, ip_src, ip_dst,ip_proto,tos):
+        self.LEARNING = 1
+        direction = 0
+        if tos:
+            paths = self.qos_paths[tos]
+            request = self.request_table[tos]
+            if (request.outter_src_ip, request.outter_dst_ip) == (ip_src,ip_dst):
+                direction = SAME_DIRECTION
+            else:
+                direction = REVERSE_DIRECTION
+        else:
+            paths = self._get_shortest_paths(src,dst)
+
+        paths_with_ports = self.add_ports_to_paths(paths, first_port, last_port)
+        paths_with_ports = paths_with_ports[0]
+
+        if VERBOSE == 1:
+            print(paths_with_ports)
+            # print(pw)
+            print("#adjacency",self.adjacency)
+
+        for node in paths[0]:
+            dp = self.datapath_list[node]
+            ofp_parser = dp.ofproto_parser
+            ports = defaultdict(list)
+            actions = []
+      
+            if node in paths_with_ports:
+                in_port = paths_with_ports[node][0]
+                out_port = paths_with_ports[node][1]
+                if (out_port) not in ports[in_port]:
+                    ports[in_port].append((out_port))
+        
+            if VERBOSE == 1:
+                print("-------------------------------")
+                print("\tnode {}: ports{}".format(node,ports) ) 
+
+            for in_port in ports:
+                out_ports = ports[in_port]
+                actions = [ofp_parser.OFPActionOutput(out_ports[0][0])]
+                meter_id = ((out_ports[0][0] << 8) & PORT_NO_MASK) 
+                cookie = 0
+                if direction == SAME_DIRECTION:
+                    meter_id = ((out_ports[0][0] << 8) & PORT_NO_MASK) | (tos & TOS_MASK) 
+                    cookie = (meter_id << 8) | (0xff)
+                else:
+                    meter_id = ((out_ports[0][0] << 8) & PORT_NO_MASK)
+
+                instr = [ofp_parser.OFPInstructionMeter(meter_id)]
+                if ip_proto == 1:
+                # Ipv4
+                    match_icmp = ofp_parser.OFPMatch(
+                        eth_type=0x0800,
+                        ip_proto=1,
+                        ipv4_src=ip_src, 
+                        ipv4_dst=ip_dst,
+                    )
+                    self.add_flow(dp, 3, match_icmp, actions,IDLE_TIMEOUT,insts=instr)        
+
+
+                    
+                if ip_proto == 6: # TCP
+                    match_tcp = ofp_parser.OFPMatch(
+                        eth_type=0x0800,
+                        ip_proto=6,
+                        ipv4_src=ip_src, 
+                        ipv4_dst=ip_dst,
+                    )
+                    self.add_flow(dp, 10, match_tcp, actions,IDLE_TIMEOUT,insts=instr)
+
+    
+                elif ip_proto == 17: # UDP
+                    match_udp= ofp_parser.OFPMatch(
+                        eth_type_nxm=0x0800, 
+                        ip_proto_nxm=17,
+                        ipv4_src=ip_src, 
+                        ipv4_dst=ip_dst,
+                        ip_ecn=(tos >> 6) & 0xff,
+                        ip_dscp=(tos << 2) & 0xff
+                    )
+                    self.add_flow(dp, 12, match_udp, actions,IDLE_TIMEOUT,insts=instr,cookie=cookie,cookie_mask=cookie)
+
+        # print("Path installation finished in ", time.time() - computation_start )
+        # print(paths_with_ports[0][src][1])
+        return paths_with_ports[src][1]
 
     @set_ev_cls(event.EventSwitchLeave, MAIN_DISPATCHER)
     def switch_leave_handler(self, ev):
@@ -549,13 +765,12 @@ class ProjectController(app_manager.RyuApp):
             except:
                 pass
 
-    # Parsing switch's information
     @set_ev_cls(event.EventSwitchEnter)
     def switch_enter_handler(self, ev):
         switch = ev.switch.dp
         ports = ev.switch.ports
         
-        # self.logger.info("ALL_SW: %s",ev.switch)
+        self.logger.info("ALL_SW: %s",ev.switch)
         
         if VERBOSE == 1:
             print("Switch In: ",switch.id)
@@ -573,10 +788,10 @@ class ProjectController(app_manager.RyuApp):
                 # By default, a port has bandwidth = DEFAULT_BW
                 #  and doesn't have meter-band limit
                 self.sw_port[switch.id][port.port_no] = PortAttr(port_name)
-                # ex: 0x0100 with 01 is port_no
-                port_meter_id = ((port.port_no << 8) & PORT_NO_MASK)
-                self.configure_meter_band(switch=switch,rate=DEFAULT_BW,
-                                          meter_id=port_meter_id)
+                # ex: 0x0100 id be meter_id of port 1
+                be_meter_id = ((port.port_no << 8) & PORT_NO_MASK)
+                self.meter_bands[switch.id] = MeterAttr(be_meter_id,port.port_no,BE_RATE*DEFAULT_BW)
+                self.configure_meter_band(switch=switch,rate=DEFAULT_BW, meter_id=be_meter_id)
         
         # self.logger.info("ALL_SW: %s",self.sw_port)
 
@@ -679,22 +894,157 @@ class ProjectController(app_manager.RyuApp):
                         stat.priority,
                         stat.idle_timeout, stat.hard_timeout, stat.flags,
                         stat.cookie, stat.packet_count, stat.byte_count,
-                        stat.match, stat.instructions))
-            for meter in meters:
-                if meter.meter_id == stat.cookie:
+                        stat.match, stat.instructions)) 
+            if stat.cookie & QOS_FLOW_MASK:
+                meter_id = (stat.cookie >> 8) & (0xffff)
+                for meter in meters:
+                    if meter.meter_id == meter_id:
+                        arrival_sec = float((stat.duration_sec - meter.last_sec) + (stat.duration_nsec - meter.last_nsec)/NSEC)
+                        arival_byte_in = stat.byte_count - meter.last_byte_in
 
+                        meter.cr_bw_need = int(arival_byte_in / arrival_sec)
+                        meter.cr_bw_need = int((8*meter.cr_bw_need)/1000)
 
-                    arrival_sec = float((stat.duration_sec - meter.last_sec) + (stat.duration_nsec - meter.last_nsec)/NSEC)
-                    arival_byte_in = stat.byte_count - meter.last_byte_in
-
-                    meter.cr_bw_need = int(arival_byte_in / arrival_sec)
-                    meter.cr_bw_need = int((8*meter.cr_bw_need)/1000)
-
-                    meter.last_byte_in = stat.byte_count
-                    meter.last_sec = stat.duration_sec
-                    meter.last_nsec = stat.duration_nsec
-                    
-                    self.logger.info('Meter_id: %s, Meter.cr_bw_need: %s\n',
-                                      meter.meter_id, meter.cr_bw_need)
+                        meter.last_byte_in = stat.byte_count
+                        meter.last_sec = stat.duration_sec
+                        meter.last_nsec = stat.duration_nsec
+                        
+                        self.logger.info('Meter_id: %s, Meter.cr_bw_need: %s\n',
+                                        meter.meter_id, meter.cr_bw_need)
 
         self.logger.debug('FlowStats: %s', flows)      
+
+    @set_ev_cls(ofp_event.EventOFPPacketIn, MAIN_DISPATCHER)
+    def _packet_in_handler(self, ev):
+        msg = ev.msg
+        datapath = msg.datapath
+        ofproto = datapath.ofproto
+        parser = datapath.ofproto_parser
+        in_port = msg.match['in_port']
+
+
+        pkt = packet.Packet(msg.data)
+        eth = pkt.get_protocol(ethernet.ethernet)
+        arp_pkt = pkt.get_protocol(arp.arp)
+
+
+        # avoid broadcast from LLDP
+        if eth.ethertype == 35020:
+            return
+        
+        # Drop the IPV6 Packets.
+        if pkt.get_protocol(ipv6.ipv6):  
+            match = parser.OFPMatch(eth_type=eth.ethertype)
+            actions = []
+            self.add_flow(datapath, 1, match, actions)
+            return None
+
+
+        dst = eth.dst
+        src = eth.src
+        dpid = datapath.id
+
+
+        if src not in self.hosts:
+            self.hosts[src] = (dpid, in_port)
+            if VERBOSE == 1:
+                print("-----------------------------------")
+                print("\t\tHost_learned: ",self.hosts)
+                print("-----------------------------------")
+        
+        # IPv4, UDP, TCP fields
+        out_port = ofproto.OFPP_FLOOD
+        ip_pkt = pkt.get_protocol(ipv4.ipv4)
+        tos = 0 # default TOS bits
+        dst_port = 0
+        ip_proto = -1
+           
+        # Parsing ARP packets
+        if arp_pkt:
+            self.LEARNING = 1
+            # print dpid, pkt
+            if VERBOSE == 1:
+                print("datapath id: "+str(dpid))
+                print("port: "+str(in_port))
+                print(("pkt_eth.dst: " + str(eth.dst)))
+                print(("pkt_eth.src: " + str(eth.src)))
+                print(("pkt_arp: " + str(arp_pkt)))
+                print(("pkt_arp:src_ip: " + str(arp_pkt.src_ip)))
+                print(("pkt_arp:dst_ip: " + str(arp_pkt.dst_ip)))
+                print(("pkt_arp:src_mac: " + str(arp_pkt.src_mac)))
+                print(("pkt_arp:dst_mac: " + str(arp_pkt.dst_mac)))
+                # dst_mac will be 00:00:00:00:00:00 when host is unknown (ARPRequest)
+            
+            src_ip = arp_pkt.src_ip
+            dst_ip = arp_pkt.dst_ip
+
+            if arp_pkt.opcode == arp.ARP_REPLY:
+                # ARP table IP - MAC
+                self.arp_table[src_ip] = src
+                h1 = self.hosts[src]
+                h2 = self.hosts[dst]
+                # self.logger.info("VXPORT %s"%vx_dst_port)
+                
+                #Install path: dpid src, src in_port, dpid dst, dpid in_port, src_ip, dst_ip
+                if VERBOSE == 1:
+                    print("Installing: Src:{}, Src in_port{}. Dst:{}, Dst in_port:{}, Src_ip:{}, Dst_ip:{}".format(h1[0], h1[1], h2[0], h2[1], src_ip, dst_ip,dst_port))
+                out_port = self.install_paths_arp(h1[0], h1[1], h2[0], h2[1], src_ip, dst_ip,ip_proto,dst_port,src_ip, dst_ip)
+                self.install_paths_arp(h2[0], h2[1], h1[0], h1[1], dst_ip, src_ip,ip_proto,dst_port,src_ip, dst_ip) # reverse
+            elif arp_pkt.opcode == arp.ARP_REQUEST:
+                if dst_ip in self.arp_table:
+                    # print("dst_ip found in arptable")
+                    self.arp_table[src_ip] = src
+                    dst_mac = self.arp_table[dst_ip]
+                    h1 = self.hosts[src]
+                    h2 = self.hosts[dst_mac]
+                    out_port = self.install_paths_arp(h1[0], h1[1], h2[0], h2[1], src_ip, dst_ip)
+                    self.install_paths_arp(h2[0], h2[1], h1[0], h1[1], dst_ip, src_ip) # reverse
+            if VERBOSE == 1:
+                print("--arptable",self.arp_table)
+
+        # Parsing IPv4 packets
+        if isinstance(ip_pkt,ipv4.ipv4):
+            ip_proto = ip_pkt.proto
+            src_ip = ip_pkt.src
+            dst_ip = ip_pkt.dst
+
+            if ip_proto == 6: # TCP
+                tcp_pkt = pkt.get_protocol(tcp.tcp)
+                dst_port = tcp_pkt.dst_port
+
+            elif ip_proto == 17: # UDP
+                udp_pkt = pkt.get_protocol(udp.udp)
+                dst_port = udp_pkt.dst_port
+
+                # Only get TOS bits in UDP packets
+                if ip_pkt.tos:
+                    tos =  ip_pkt.tos
+                
+                self.arp_table[src_ip] = src
+                if dst_ip in self.arp_table:
+                    dst_mac = self.arp_table[dst_ip]
+                    h1 = self.hosts[src]
+                    h2 = self.hosts[dst_mac]
+                    
+                    #Install path: dpid src, src in_port, dpid dst, dpid in_port, src_ip, dst_ip, tos
+                    out_port = self.install_paths(src=h1[0], first_port=h1[1], dst=h2[0], 
+                                                  last_port=h2[1], ip_src=src_ip, ip_dst=dst_ip,
+                                                  ip_proto=ip_proto,tos=tos)
+                    self.install_paths(src=h2[0], first_port=h2[1], dst=h1[0], 
+                                       last_port=h1[1], ip_src=dst_ip, ip_dst=src_ip,
+                                       ip_proto=ip_proto, tos=tos) # reverse
+         
+        
+        actions = [parser.OFPActionOutput(out_port)]
+
+
+        data = None
+        if msg.buffer_id == ofproto.OFP_NO_BUFFER:
+            data = msg.data
+
+
+        out = parser.OFPPacketOut(
+            datapath=datapath, buffer_id=msg.buffer_id, in_port=in_port,
+            actions=actions, data=data)
+        datapath.send_msg(out)
+        self.LEARNING = 0

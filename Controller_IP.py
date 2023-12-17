@@ -319,7 +319,6 @@ class ProjectController(app_manager.RyuApp):
         cost += self.get_host_link_cost(last_port, path[-1])
         return cost
     
-    
     def get_path_cost_qos(self, path,first_port,last_port):
         '''
         Get the path cost
@@ -332,7 +331,6 @@ class ProjectController(app_manager.RyuApp):
         cost.append(self.get_host_link_bw_available(last_port, path[-1]))
                     
         return cost
-    
 
     def sorted_path(self,paths,pw):
         # sorted paths based on pw
@@ -342,8 +340,7 @@ class ProjectController(app_manager.RyuApp):
        
         # self.logger.info("sorted:%s",
         #                 sorted_list)
-        return sorted_list
-             
+        return sorted_list  
                 
     def get_optimal_paths(self, src, dst,first_port,last_port):
         '''
@@ -395,9 +392,6 @@ class ProjectController(app_manager.RyuApp):
             
         # print(paths_p)
         return paths_p
-
-
-
 
     def install_paths(self, src, first_port, dst, last_port, ip_src, ip_dst,ip_proto,tos):
         # if SHOW_PATH == 1:
@@ -620,9 +614,7 @@ class ProjectController(app_manager.RyuApp):
                 self.add_flow(dp, 32768, match_ip, actions)
                 self.add_flow(dp, 1, match_arp, actions)
         return 
-    
-    
-        
+            
     # def add_flow(self, datapath, priority, match, actions, idle_timeout=None, buffer_id=None,insts=None,table_id=0):
     #     # print "Adding flow ", match, actions
     #     ofproto = datapath.ofproto
