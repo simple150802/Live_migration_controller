@@ -39,7 +39,6 @@ from libovsdb import libovsdb
 import json
 from ryu.lib.ovs import bridge
 from ryu.ofproto import nx_match
-import numpy as np
 from dataclasses import dataclass
 
 # Mark port has QoS meter
@@ -107,7 +106,8 @@ class ProjectController(app_manager.RyuApp):
         self.datapath_list = {} #{switch_id:datapath}
         self.arp_table = {}
         self.switches = [] #[switch_id]
-        self.hosts = {}
+        self.hosts = {} # self.hosts = {'mac_src': [src_switch, src_port], 'mac_dst': [dst_switch, dst_port],
+    # ... các mục khác}
         self.multipath_group_ids = {}
         self.all_group_id = {}
         self.group_id_count =0
@@ -706,7 +706,6 @@ class ProjectController(app_manager.RyuApp):
 
         self.add_flow(datapath, 0, match, actions)
 
-
     @set_ev_cls(ofp_event.EventOFPPortDescStatsReply, MAIN_DISPATCHER)
     def port_desc_stats_reply_handler(self, ev):
         switch = ev.msg.datapath
@@ -1012,7 +1011,7 @@ class ProjectController(app_manager.RyuApp):
         
     def send_group_mod(self, datapath):
         ofp = datapath.ofproto
-        ofp_parser = datapath.ofproto_parser
+        ofp_parser = datapath.ofproto_parser  
         
         if not self.all_group_id or not self.all_group_id.setdefault(datapath.id,{}):
             return
@@ -1057,7 +1056,7 @@ class ProjectController(app_manager.RyuApp):
         # self.logger.info("Host: %s",hosts)
         for host in hosts:
             h_temp = self.hosts[host]
-            h_temp_name = self.sw_port[dpid][h_temp[1]]
+            h_temp_name = self.sw_port[dpid][h_temp[1]] 
             bl = (self.tx_byte_int[dpid][h_temp[1]]+self.rx_byte_int[dpid][h_temp[1]])*8
             self.port_reserve_bw[dpid][h_temp_name] = DEFAULT_BW - bl
             
@@ -1250,7 +1249,7 @@ class ProjectController(app_manager.RyuApp):
             res = db.update(table = "Queue",
                             row = {"other_config": ['map',config]},
                             where = [["_uuid", "==", ["uuid",queue_uuid]]])
- 
+   
     def queue_del(self,queue_id,port):
         db = libovsdb.OVSDBConnection(ovsdb_server, "Open_vSwitch")
         get_port = db.select(table = "Port",
@@ -1870,8 +1869,8 @@ class ProjectController(app_manager.RyuApp):
         ofp = dp.ofproto
 
         if self.meter_bands[dp.id]:
-        for stat in msg.body:
-            meters.append('meter_id=0x%08x len=%d flow_count=%d '
+            for stat in msg.body:
+                meters.append('meter_id=0x%08x len=%d flow_count=%d '
                         'packet_in_count=%d byte_in_count=%d '
                         'duration_sec=%d duration_nsec=%d '
                         'band_stats=%s' %
