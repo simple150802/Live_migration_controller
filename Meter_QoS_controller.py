@@ -94,6 +94,8 @@ class RequestAttr:
     min_bw: int 
     status: int = REQUEST_NEW
     change_status: int = 0
+    inner_src_ip: int
+    inner_dst_ip: int
 
 @dataclass
 class PortAttr:
@@ -448,7 +450,7 @@ class ProjectController(app_manager.RyuApp):
         pw = []
         for path in paths:
             pw.append(len(path))
-        return self.sorted_path(paths,pw)[0:(paths_count)],sorted(pw[0:(paths_count)])        
+        return self._sorted_path(paths,pw)[0:(paths_count)],sorted(pw[0:(paths_count)])        
     
     def _sorted_path(self,paths,path_weight):
         '''

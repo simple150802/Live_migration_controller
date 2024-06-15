@@ -666,8 +666,7 @@ class ProjectController(app_manager.RyuApp):
             " |-- type: %s\n"
             " |-- code: %s\n"
             " |-- dpid: %s\n"
-            ,
-            
+            ,            
             hex(msg.version), hex(msg.msg_type), hex(msg.msg_len),
             hex(msg.xid), ofp.ofp_msg_type_to_str(msg.msg_type),
             hex(msg.type), hex(msg.code), utils.binary_str(msg.data),

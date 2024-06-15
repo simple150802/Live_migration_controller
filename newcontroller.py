@@ -84,7 +84,7 @@ class Ryu_con(app_manager.RyuApp):
         self.bandwidths = defaultdict(lambda: defaultdict(lambda: DEFAULT_BW))
         self.sw_port = defaultdict(dict) #{switch_id:{port_no:PortAttr(name,have_qos,available_bw)}}
         self.count = 0
-        self.path_install_cnt =0
+        self.path_install_cnt = 0
         
         self.max_bw = {}
         self.curr_max_bw = {}
